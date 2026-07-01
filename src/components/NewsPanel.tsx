@@ -179,7 +179,7 @@ export default function NewsPanel() {
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-slate-800 mt-1">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-[10px] font-medium text-slate-500 mr-1 uppercase tracking-wide">波及标的:</span>
-                  {item.affectedAssets.map((asset) => (
+                  {(item.affectedAssets || []).map((asset) => (
                     <span 
                       key={asset}
                       className="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 rounded text-[11px] font-mono font-medium"

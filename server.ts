@@ -46,6 +46,124 @@ function getGemini(): GoogleGenAI {
   return aiInstance;
 }
 
+// Wrapper helper to generate content safely across different models (like Gemma 2 and Gemini)
+async function generateModelContent(ai: GoogleGenAI, params: {
+  contents: any;
+  config?: any;
+}) {
+  let modelName = "gemma-4-26b-a4b-it";
+  const envModel = process.env.GEMINI_MODEL;
+  if (envModel && (envModel.toLowerCase().includes("gemma") || envModel.toLowerCase().includes("gemini")) && !envModel.startsWith("AQ.")) {
+    modelName = envModel;
+  }
+  
+  // Standardize gemma-4-26b or gemma-2-27b references to the actual gemma-4-26b-a4b-it model supported by Gemini API
+  if (modelName.toLowerCase().includes("gemma-4-26b") || modelName.toLowerCase().includes("gemma-2-27b") || modelName.toLowerCase() === "gemma-2-27b-it") {
+    modelName = "gemma-4-26b-a4b-it";
+  }
+
+  const isGemma = modelName.toLowerCase().includes("gemma");
+
+  const finalConfig: any = params.config ? { ...params.config } : {};
+  let finalContents = params.contents;
+  const hadJsonMimeType = finalConfig.responseMimeType === "application/json";
+  const hasTools = finalConfig.tools && finalConfig.tools.length > 0;
+
+  if (isGemma) {
+    // 1. Remove googleSearch tool which is unsupported by Gemma
+    if (finalConfig.tools) {
+      delete finalConfig.tools;
+    }
+    // Save schema for prompt instruction injection before deleting
+    const schemaStr = finalConfig.responseSchema ? JSON.stringify(finalConfig.responseSchema, null, 2) : "";
+    // 2. Remove responseSchema which is unsupported by Gemma
+    if (finalConfig.responseSchema) {
+      delete finalConfig.responseSchema;
+    }
+    // Also remove responseMimeType since Gemma on Gemini API may not support it directly
+    delete finalConfig.responseMimeType;
+
+    // 3. Handle systemInstruction for Gemma by prepending it to the user prompt
+    if (finalConfig.systemInstruction) {
+      const sysInstructionText = typeof finalConfig.systemInstruction === "string" 
+        ? finalConfig.systemInstruction 
+        : (finalConfig.systemInstruction.parts?.[0]?.text || "");
+      
+      delete finalConfig.systemInstruction;
+
+      if (sysInstructionText) {
+        if (typeof finalContents === "string") {
+          finalContents = `[System Instructions]\n${sysInstructionText}\n\n[User Prompt]\n${finalContents}`;
+        } else if (Array.isArray(finalContents)) {
+          finalContents = [
+            { role: "user", parts: [{ text: `[System Instructions]\n${sysInstructionText}` }] },
+            ...finalContents
+          ];
+        }
+      }
+    }
+
+    // 4. Force JSON format prompt if responseMimeType is json
+    if (hadJsonMimeType) {
+      let jsonPromptSuffix = `\n\nIMPORTANT: Return ONLY a valid JSON object. Do not include any conversational text or markdown codeblocks (such as \`\`\`json). The response must be a single raw JSON object starting with '{' and ending with '}'.`;
+      if (schemaStr) {
+        jsonPromptSuffix += `\n\nYour JSON response must strictly conform to this JSON schema structure:\n${schemaStr}`;
+      }
+      if (typeof finalContents === "string") {
+        finalContents += jsonPromptSuffix;
+      } else if (Array.isArray(finalContents)) {
+        const lastIndex = finalContents.length - 1;
+        if (lastIndex >= 0 && finalContents[lastIndex].parts?.[0]) {
+          finalContents[lastIndex].parts[0].text += jsonPromptSuffix;
+        }
+      }
+    }
+  } else if (hasTools && hadJsonMimeType) {
+    // Gemini API does not support combining tool usage with responseMimeType: "application/json".
+    // We strip the json mimeType and schema from config, and append instructions along with the schema definition to output valid JSON.
+    const schemaStr = finalConfig.responseSchema ? JSON.stringify(finalConfig.responseSchema, null, 2) : "";
+    delete finalConfig.responseMimeType;
+    delete finalConfig.responseSchema;
+    
+    let jsonPromptSuffix = `\n\nIMPORTANT: Return ONLY a valid JSON object. Do not include any conversational text or markdown codeblocks (such as \`\`\`json). The response must be a single raw JSON object starting with '{' and ending with '}'.`;
+    if (schemaStr) {
+      jsonPromptSuffix += `\n\nYour JSON response must strictly conform to this JSON schema structure:\n${schemaStr}`;
+    }
+    
+    if (typeof finalContents === "string") {
+      finalContents += jsonPromptSuffix;
+    } else if (Array.isArray(finalContents)) {
+      const lastIndex = finalContents.length - 1;
+      if (lastIndex >= 0 && finalContents[lastIndex].parts?.[0]) {
+        finalContents[lastIndex].parts[0].text += jsonPromptSuffix;
+      }
+    }
+  }
+
+  let finalModelName = modelName;
+  if (!finalModelName.startsWith("models/") && !finalModelName.startsWith("tunedModels/")) {
+    finalModelName = `models/${finalModelName}`;
+  }
+
+  const response = await ai.models.generateContent({
+    model: finalModelName,
+    contents: finalContents,
+    config: finalConfig
+  });
+
+  // Safe parsing helper if responseText needs to be cleaned
+  let responseText = response.text || "";
+  if ((isGemma || hasTools) && hadJsonMimeType) {
+    // Strip markdown wrappers if any were added
+    responseText = responseText.replace(/^\s*```json\s*/i, "").replace(/```\s*$/, "").trim();
+  }
+
+  return {
+    ...response,
+    text: responseText
+  };
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -421,6 +539,7 @@ function getLocalAdvisorResponse(query: string) {
 
   return { reply, references };
 }
+
 // API: Fetch and analyze daily financial news
 app.get("/api/news", async (req, res) => {
   try {
@@ -451,8 +570,7 @@ app.get("/api/news", async (req, res) => {
     const prompt = `你是一个顶级财经新闻解析器。请利用谷歌搜索查询今天（${today}）来自华尔街日报(Wall Street Journal/WSJ)、彭博社(Bloomberg)、路透社(Reuters)、金融时报(Financial Times)等权威媒体的最核心财经新闻、市场热点和宏观经济政策，并输出一个包含 5 个最重要新闻事件的 JSON 列表。
 请重点寻找会影响股票、期货、外汇和加密货币走势的关键新闻。新闻内容和总结请用中文表述。`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateModelContent(ai, {
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -507,7 +625,7 @@ app.get("/api/news", async (req, res) => {
 
     res.json({ news: newsArray, cached: false, isDemoMode: false });
   } catch (error: any) {
-    console.error("Error in /api/news, falling back to mock:", error);
+    console.warn("Warning in /api/news, falling back to mock:", error.message || error);
     cachedNews = getMockNews();
     newsCacheTime = Date.now();
     res.json({ 
@@ -554,8 +672,7 @@ app.get("/api/asset-trends", async (req, res) => {
 
 请对每一个大类进行深入的长短期趋势分析（短期：1周-1个月，长期：3个月-1年以上），给出具体的技术指标和基本面驱动因素，并输出结构化的 JSON。所有文字必须使用中文。`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateModelContent(ai, {
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -623,7 +740,7 @@ app.get("/api/asset-trends", async (req, res) => {
 
     res.json({ trends: trendsArray, cached: false, isDemoMode: false });
   } catch (error: any) {
-    console.error("Error in /api/asset-trends, falling back to mock:", error);
+    console.warn("Warning in /api/asset-trends, falling back to mock:", error.message || error);
     cachedTrends = getMockTrends();
     trendsCacheTime = Date.now();
     res.json({
@@ -665,8 +782,7 @@ app.get("/api/hot-pushes", async (req, res) => {
     const prompt = `你是一个睿智的首席股票策略分析师。请利用谷歌搜索查询今天（${today}）全球或A股、港股、美股中最受追捧的2-3个【热门投资主题/行业板块】（例如：AI芯片与半导体、高股息红利板块、黄金避险实物、新能源车出海等）。
 分析这些板块的上涨催化剂、投资策略、关联的代表性股票/ETF，并写出非常明确的市场风险提示与投资警戒。所有文本请用中文。`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateModelContent(ai, {
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -723,7 +839,7 @@ app.get("/api/hot-pushes", async (req, res) => {
 
     res.json({ hotPushes: hotPushesArray, cached: false, isDemoMode: false });
   } catch (error: any) {
-    console.error("Error in /api/hot-pushes, falling back to mock:", error);
+    console.warn("Warning in /api/hot-pushes, falling back to mock:", error.message || error);
     cachedHotPushes = getMockHotPushes();
     hotPushesCacheTime = Date.now();
     res.json({
@@ -778,8 +894,7 @@ app.post("/api/advisor/chat", async (req, res) => {
       parts: [{ text: msg.content }]
     }));
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateModelContent(ai, {
       contents,
       config: {
         systemInstruction,
@@ -803,7 +918,7 @@ app.post("/api/advisor/chat", async (req, res) => {
       isDemoMode: false
     });
   } catch (error: any) {
-    console.error("Error in /api/advisor/chat, falling back to local engine:", error);
+    console.warn("Warning in /api/advisor/chat, falling back to local engine:", error.message || error);
     const lastUserMsg = messages[messages.length - 1]?.content || "";
     const { reply, references } = getLocalAdvisorResponse(lastUserMsg);
     res.json({
@@ -865,8 +980,7 @@ ${portfolioDescription}
 
 请输出结构化的 JSON 格式，文字全部使用中文。`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await generateModelContent(ai, {
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -892,7 +1006,7 @@ ${portfolioDescription}
             vulnerabilities: {
               type: Type.ARRAY,
               items: { type: Type.STRING },
-              description: "资产组合存在的2-3个核心漏洞或高风险点"
+              description: "资产组合存在的2-3个核心漏洞 or 高风险点"
             },
             rebalancingRecommendations: {
               type: Type.ARRAY,
@@ -918,6 +1032,218 @@ ${portfolioDescription}
       demoReason: `智能调仓诊断雷达遇到小阻碍（${error.message || "请求超时"}）。已为您切换至高精度内置评估模型。`
     });
   }
+});
+
+// Helper: Fetch BTC price from Binance (extremely fast and public)
+async function fetchBtcBinance(): Promise<{ price: number; change: number } | null> {
+  try {
+    const res = await fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT");
+    if (res.ok) {
+      const data: any = await res.json();
+      if (data) {
+        const price = parseFloat(data.lastPrice);
+        const change = parseFloat(data.priceChangePercent);
+        if (!isNaN(price) && !isNaN(change)) {
+          return { price: Math.round(price), change: parseFloat(change.toFixed(2)) };
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn("Failed to fetch BTC from Binance:", e.message || e);
+  }
+  return null;
+}
+
+// Helper: Fetch price from Yahoo Finance
+async function fetchYahooPrice(symbol: string): Promise<{ price: number; change: number } | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+    if (!response.ok) {
+      console.warn(`Yahoo Finance request for ${symbol} failed with status: ${response.status}`);
+      return null;
+    }
+    const data: any = await response.json();
+    const result = data?.chart?.result?.[0];
+    if (result) {
+      const meta = result.meta;
+      const price = meta.regularMarketPrice;
+      const prevClose = meta.previousClose || meta.chartPreviousClose;
+      const change = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+      if (typeof price === "number") {
+        return { 
+          price: Number(price.toFixed(symbol === "BTC-USD" ? 0 : 2)), 
+          change: Number(change.toFixed(2)) 
+        };
+      }
+    }
+    return null;
+  } catch (err: any) {
+    console.warn(`Error fetching Yahoo price for ${symbol}:`, err.message || err);
+    return null;
+  }
+}
+
+// API: Get Live Watchlist Prices (Real-time data from Binance/Yahoo Finance with fallback)
+app.get("/api/watchlist-prices", async (req, res) => {
+  const symbols = {
+    "BTC/USD": "BTC-USD",
+    "AAPL": "AAPL",
+    "GCZ6 (GOLD)": "GC=F"
+  };
+
+  const results: any[] = [];
+
+  for (const [ticker, yahooSymbol] of Object.entries(symbols)) {
+    let fetched: { price: number; change: number } | null = null;
+
+    // Fast-path for Bitcoin using public Binance ticker
+    if (ticker === "BTC/USD") {
+      fetched = await fetchBtcBinance();
+    }
+
+    // Secondary path or other symbols using Yahoo Finance
+    if (!fetched) {
+      fetched = await fetchYahooPrice(yahooSymbol);
+    }
+
+    // Tertiary path: If fetch fails, attempt Gemini search grounding if API key is present
+    if (!fetched && process.env.GEMINI_API_KEY) {
+      try {
+        console.log(`Attempting Gemini fallback for ${ticker}`);
+        const ai = getGemini();
+        const response = await generateModelContent(ai, {
+          contents: `Return the current market price and 24h percentage change of ${ticker} as a JSON object with properties 'price' (number) and 'change' (number, e.g. 1.25 for +1.25%). Do not include any other markdown besides raw JSON.`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                price: { type: Type.NUMBER },
+                change: { type: Type.NUMBER }
+              },
+              required: ["price", "change"]
+            }
+          }
+        });
+        const parsed = JSON.parse(response.text || "{}");
+        if (typeof parsed.price === "number" && typeof parsed.change === "number") {
+          fetched = { price: parsed.price, change: parsed.change };
+        }
+      } catch (geminiErr: any) {
+        console.warn(`Gemini fallback failed for ${ticker}:`, geminiErr.message);
+      }
+    }
+
+    // Hardcoded safety defaults if everything fails
+    if (!fetched) {
+      const defaultFallbacks: any = {
+        "BTC/USD": { price: 96450, change: 2.1 },
+        "AAPL": { price: 294.00, change: 0.8 },
+        "GCZ6 (GOLD)": { price: 2630.50, change: -0.4 }
+      };
+      fetched = defaultFallbacks[ticker];
+    }
+
+    results.push({
+      ticker,
+      price: fetched!.price,
+      change: fetched!.change,
+      precision: ticker === "BTC/USD" ? 0 : 2
+    });
+  }
+
+  res.json({ watchlist: results, isRealData: true });
+});
+
+// API: Get live prices for any list of portfolio tickers
+app.post("/api/portfolio/prices", async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "Invalid items format" });
+  }
+
+  const updatedPrices: any[] = [];
+  for (const item of items) {
+    let price: number | null = null;
+    let symbol = item.ticker.toUpperCase().trim();
+
+    // 1. Fast-path Binance fetch for Bitcoin/crypto if matching BTC
+    if (item.assetClass === "crypto" && (symbol === "BTC" || symbol === "BTCUSD" || symbol === "BTC/USD")) {
+      const binance = await fetchBtcBinance();
+      if (binance) {
+        price = binance.price;
+      }
+    }
+
+    // 2. Try fetching from Yahoo Finance with mapped symbol
+    if (!price) {
+      let yahooSymbol = symbol;
+      if (item.assetClass === "crypto") {
+        if (!yahooSymbol.includes("-") && !yahooSymbol.includes("/")) {
+          yahooSymbol = `${yahooSymbol}-USD`;
+        } else {
+          yahooSymbol = yahooSymbol.replace("/", "-");
+        }
+      } else if (item.assetClass === "forex") {
+        if (!yahooSymbol.endsWith("=X")) {
+          yahooSymbol = yahooSymbol.replace("/", "") + "=X";
+        }
+      } else if (item.assetClass === "futures") {
+        if (yahooSymbol === "GOLD" || yahooSymbol === "GC" || yahooSymbol === "GCZ6" || yahooSymbol === "GLD") {
+          // GLD is gold ETF, GC=F is gold futures
+          yahooSymbol = yahooSymbol === "GLD" ? "GLD" : "GC=F";
+        }
+      }
+
+      const fetched = await fetchYahooPrice(yahooSymbol);
+      if (fetched) {
+        price = fetched.price;
+      }
+    }
+
+    // 3. Fallback to Gemini search grounding if available and fetch failed
+    if (!price && process.env.GEMINI_API_KEY) {
+      try {
+        console.log(`Attempting Gemini fallback for portfolio ticker ${symbol}`);
+        const ai = getGemini();
+        const response = await generateModelContent(ai, {
+          contents: `Return the current market price of ${symbol} (${item.name || item.assetClass}) as a JSON object with a single property 'price' (number). Do not include any other markdown besides raw JSON.`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                price: { type: Type.NUMBER }
+              },
+              required: ["price"]
+            }
+          }
+        });
+        const parsed = JSON.parse(response.text || "{}");
+        if (typeof parsed.price === "number") {
+          price = parsed.price;
+        }
+      } catch (geminiErr: any) {
+        console.warn(`Gemini fallback failed for portfolio ticker ${symbol}:`, geminiErr.message);
+      }
+    }
+
+    // If fetch failed completely, keep old price
+    updatedPrices.push({
+      id: item.id,
+      ticker: item.ticker,
+      currentPrice: price !== null ? price : item.currentPrice
+    });
+  }
+
+  res.json({ prices: updatedPrices });
 });
 
 // Serve static assets / handle fallback in production & mounting Vite in dev

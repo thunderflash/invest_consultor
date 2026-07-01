@@ -58,6 +58,9 @@ export default function App() {
           if (data.isDemoMode) {
             setIsDemoMode(true);
             setDemoReason(data.demoReason || null);
+          } else {
+            setIsDemoMode(false);
+            setDemoReason(null);
           }
         }
       } catch (err) {
@@ -99,6 +102,117 @@ export default function App() {
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysisResult | null>(null);
   const [portfolioLoading, setPortfolioLoading] = useState(false);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
+
+  // Live watchlist state that ticks in real-time
+  const [watchlist, setWatchlist] = useState([
+    { ticker: "BTC/USD", price: 96450, change: 2.1, precision: 0 },
+    { ticker: "AAPL", price: 294.00, change: 0.8, precision: 2 },
+    { ticker: "GCZ6 (GOLD)", price: 2630.50, change: -0.4, precision: 2 }
+  ]);
+  
+  // Track visual flash triggers for ticking items
+  const [lastTickTicks, setLastTickTicks] = useState<{ [key: string]: 'up' | 'down' | null }>({});
+
+  useEffect(() => {
+    const fetchWatchlistPrices = async () => {
+      try {
+        const res = await fetch("/api/watchlist-prices");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.watchlist) {
+            setWatchlist(prev => {
+              return prev.map(oldItem => {
+                const newItem = data.watchlist.find((x: any) => x.ticker === oldItem.ticker);
+                if (newItem) {
+                  // If the price has actually changed, flash the background!
+                  if (oldItem.price !== newItem.price) {
+                    const isUp = newItem.price > oldItem.price;
+                    setLastTickTicks(prevTicks => ({
+                      ...prevTicks,
+                      [newItem.ticker]: isUp ? 'up' : 'down'
+                    }));
+                    setTimeout(() => {
+                      setLastTickTicks(prevTicks => ({
+                        ...prevTicks,
+                        [newItem.ticker]: null
+                      }));
+                    }, 800);
+                  }
+                  return {
+                    ...oldItem,
+                    price: newItem.price,
+                    change: newItem.change
+                  };
+                }
+                return oldItem;
+              });
+            });
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to fetch watchlist prices:", err);
+      }
+    };
+
+    // Initial fetch immediately
+    fetchWatchlistPrices();
+
+    // Fetch every 15 seconds for true real-time updates
+    const interval = setInterval(fetchWatchlistPrices, 15000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Keep a ref of the portfolio to avoid stale closures in intervals
+  const portfolioRef = useRef(portfolio);
+  useEffect(() => {
+    portfolioRef.current = portfolio;
+  }, [portfolio]);
+
+  const fetchPortfolioPrices = async (currentPortfolioList = portfolioRef.current) => {
+    if (currentPortfolioList.length === 0) return;
+    try {
+      const response = await fetch("/api/portfolio/prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: currentPortfolioList })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.prices) {
+          setPortfolio(prev => {
+            let changed = false;
+            const next = prev.map(item => {
+              const updated = data.prices.find((p: any) => p.id === item.id);
+              if (updated && updated.currentPrice !== undefined && updated.currentPrice !== item.currentPrice) {
+                changed = true;
+                return {
+                  ...item,
+                  currentPrice: updated.currentPrice
+                };
+              }
+              return item;
+            });
+            return changed ? next : prev;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to fetch live prices for portfolio:", e);
+    }
+  };
+
+  useEffect(() => {
+    // Initial fetch of portfolio prices
+    fetchPortfolioPrices(portfolioRef.current);
+
+    // Fetch every 20 seconds
+    const interval = setInterval(() => {
+      fetchPortfolioPrices(portfolioRef.current);
+    }, 20000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Quick prompt questions
   const quickQuestions = [
@@ -232,14 +346,15 @@ export default function App() {
     }
   };
 
-  // Auto-run analysis when portfolio page opens, or when portfolio changes
+  // Auto-run analysis when portfolio page opens, or when portfolio changes/prices update
+  const portfolioHash = portfolio.map(item => `${item.id}:${item.currentPrice}`).join(",");
   useEffect(() => {
     if (portfolio.length > 0) {
       triggerPortfolioAnalysis();
     } else {
       setPortfolioAnalysis(null);
     }
-  }, [portfolio.length]);
+  }, [portfolioHash]);
 
   const calculateTotalValue = () => {
     return portfolio.reduce((sum, item) => sum + (item.amount * item.currentPrice), 0);
@@ -404,20 +519,36 @@ export default function App() {
 
             {/* Core Ticker Quick Lookout */}
             <div className="px-2 pt-4 border-t border-slate-900">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2 font-mono">LIVE WATCHLISTS</span>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block font-mono">LIVE WATCHLISTS</span>
+                <span className="flex h-1.5 w-1.5 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                </span>
+              </div>
               <div className="space-y-1 text-xs font-mono">
-                <div className="flex items-center justify-between p-1.5 bg-slate-900/35 rounded border border-slate-900">
-                  <span className="text-slate-400">BTC/USD</span>
-                  <span className="text-emerald-400 font-bold">$96,450 (+2.1%)</span>
-                </div>
-                <div className="flex items-center justify-between p-1.5 bg-slate-900/35 rounded border border-slate-900">
-                  <span className="text-slate-400">AAPL</span>
-                  <span className="text-emerald-400 font-bold">$234.50 (+0.8%)</span>
-                </div>
-                <div className="flex items-center justify-between p-1.5 bg-slate-900/35 rounded border border-slate-900">
-                  <span className="text-slate-400">GCZ6 (GOLD)</span>
-                  <span className="text-rose-400 font-bold">$2,630.50 (-0.4%)</span>
-                </div>
+                {watchlist.map((item) => {
+                  const isPositive = item.change >= 0;
+                  const flash = lastTickTicks[item.ticker];
+                  let bgClass = "bg-slate-900/35 border-slate-900/50";
+                  if (flash === 'up') bgClass = "bg-emerald-950/30 border-emerald-500/40 shadow-xs";
+                  if (flash === 'down') bgClass = "bg-rose-950/30 border-rose-500/40 shadow-xs";
+
+                  return (
+                    <div 
+                      key={item.ticker} 
+                      className={`flex items-center justify-between p-1.5 rounded border transition-all duration-300 ${bgClass}`}
+                    >
+                      <span className="text-slate-400 text-[11px] font-medium">{item.ticker}</span>
+                      <span className={`font-bold transition-colors duration-300 ${isPositive ? "text-emerald-400" : "text-rose-400"}`}>
+                        ${item.price.toLocaleString("en-US", { minimumFractionDigits: item.precision, maximumFractionDigits: item.precision })} 
+                        <span className="text-[10px] ml-1 font-semibold">
+                          ({isPositive ? "+" : ""}{item.change.toFixed(2)}%)
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -451,7 +582,7 @@ export default function App() {
                   {demoReason || "系统未检测到 GEMINI_API_KEY 环境变量。已为您加载了多因子离线资产沙盘及宏观策略。"}
                 </p>
                 <p className="text-xs text-slate-400 leading-normal">
-                  💡 <b>操作指引：</b>若要启用由 <b>Gemini-3.5-Flash</b> 驱动的【实时全球财经检索穿透】、【资产长短期趋势量化研判】和持仓组合的【AI调仓定制雷达】，请在屏幕右下角点击 <b>Settings &gt; Secrets</b> 配置您的 <b>GEMINI_API_KEY</b>，刷新即可激活全网实时流。
+                  💡 <b>操作指引：</b>若要启用由 <b>Gemma-4-26B 免费版</b> 驱动的【实时全球财经检索穿透】、【资产长短期趋势量化研判】 and 持仓组合的【AI调仓定制雷达】，请在屏幕右下角点击 <b>Settings &gt; Secrets</b> 配置您的 <b>GEMINI_API_KEY</b>，刷新即可激活全网实时流。
                 </p>
               </div>
             </div>

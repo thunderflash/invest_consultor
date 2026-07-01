@@ -216,7 +216,7 @@ export default function TrendAnalysisPanel() {
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">核心基本面驱动力</h4>
               </div>
               <ul className="space-y-2">
-                {activeTrend.fundamentalDrivers.map((item, idx) => (
+                {(activeTrend.fundamentalDrivers || []).map((item, idx) => (
                   <li key={idx} className="flex items-start gap-2 text-xs text-slate-300 leading-relaxed bg-slate-950/30 border border-slate-800 p-2.5 rounded-lg shadow-2xs">
                     <ChevronRight className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
                     <span>{item}</span>
@@ -232,7 +232,7 @@ export default function TrendAnalysisPanel() {
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">技术指标雷达</h4>
               </div>
               <ul className="space-y-2">
-                {activeTrend.technicalIndicators.map((item, idx) => (
+                {(activeTrend.technicalIndicators || []).map((item, idx) => (
                   <li key={idx} className="flex items-start gap-2 text-xs text-slate-300 leading-relaxed bg-slate-950/30 border border-slate-800 p-2.5 rounded-lg shadow-2xs">
                     <ChevronRight className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
                     <span className="font-mono">{item}</span>
@@ -254,7 +254,7 @@ export default function TrendAnalysisPanel() {
                 {getRiskLevelBadge(activeTrend.riskLevel)}
               </div>
               <ul className="space-y-1.5">
-                {activeTrend.riskWarnings.map((warning, idx) => (
+                {(activeTrend.riskWarnings || []).map((warning, idx) => (
                   <li key={idx} className="text-[11px] text-rose-300 leading-relaxed flex items-start gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 mt-1.5" />
                     <span>{warning}</span>
@@ -270,7 +270,7 @@ export default function TrendAnalysisPanel() {
                 <h4 className="text-xs font-bold text-emerald-400 tracking-wider">投顾操作资产策略建议</h4>
               </div>
               <ul className="space-y-1.5">
-                {activeTrend.investmentAdvice.map((advice, idx) => (
+                {(activeTrend.investmentAdvice || []).map((advice, idx) => (
                   <li key={idx} className="text-[11px] text-emerald-300 leading-relaxed flex items-start gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0 mt-1.5" />
                     <span>{advice}</span>
