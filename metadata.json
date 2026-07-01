@@ -1,0 +1,6 @@
+{
+  "name": "AI Financial Advisor",
+  "description": "An automated investment advisor agent that analyzes financial news, tracks market trends across stocks, futures, forex, and cryptocurrency, and provides investment suggestions and risk warnings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
