@@ -48,5 +48,11 @@ app.post("/api/advisor/chat", (req, res) => res.json(getLocalAdvisorResponse("")
 app.post("/api/portfolio/analyze", (req, res) => res.json(getMockPortfolioAnalysis([])));
 app.get("/api/watchlist-prices", (req, res) => res.json({ watchlist: [], isRealData: false }));
 app.post("/api/portfolio/prices", (req, res) => res.json({ prices: [] }));
+app.get("/api/debug", (req, res) => {
+  res.json({
+    keyPresent: !!process.env.GEMINI_API_KEY,
+    keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 4) + "..." : "null"
+  });
+});
 
 export default app;
