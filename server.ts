@@ -5,12 +5,12 @@
 
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 dotenv.config();
+
 
 // Cache variables to prevent excessive API calling and rate limit hits
 let cachedNews: any = null;
@@ -1250,6 +1250,7 @@ app.post("/api/portfolio/prices", async (req, res) => {
 // Serve static assets / handle fallback in production & mounting Vite in dev
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1268,6 +1269,7 @@ async function startServer() {
   });
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === fileURLToPath(process.argv[1])) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === fileURLToPath(pathToFileURL(process.argv[1]))) {
   startServer();
 }
+
