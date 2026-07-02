@@ -8,6 +8,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
@@ -164,7 +165,7 @@ async function generateModelContent(ai: GoogleGenAI, params: {
   };
 }
 
-const app = express();
+export const app = express();
 const PORT = 3000;
 
 app.use(express.json());
@@ -1267,4 +1268,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.argv[1] && fileURLToPath(import.meta.url) === fileURLToPath(process.argv[1])) {
+  startServer();
+}
