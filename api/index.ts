@@ -4,54 +4,70 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// Initialize Gemini
+let aiInstance: GoogleGenAI | null = null;
+function getGemini(): GoogleGenAI {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
+    aiInstance = new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+    });
+  }
+  return aiInstance;
+}
+
+// Model generation helper
+async function generateModelContent(ai: GoogleGenAI, params: { contents: any; config?: any }) {
+  let modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash"; // Updated to a stable standard model
+  const isGemma = modelName.toLowerCase().includes("gemma");
+  const finalConfig: any = params.config ? { ...params.config } : {};
+  let finalContents = params.contents;
+
+  if (isGemma) {
+    delete finalConfig.tools;
+    delete finalConfig.responseSchema;
+    delete finalConfig.responseMimeType;
+  }
+
+  if (!modelName.startsWith("models/") && !modelName.startsWith("tunedModels/")) modelName = `models/${modelName}`;
+  const response = await ai.models.generateContent({ model: modelName, contents: finalContents, config: finalConfig });
+  return { ...response, text: response.text || "" };
+}
+
 const app = express();
 app.use(express.json());
 
-// Helper functions and Mocks
+// Helper functions
 function getTodayDateString(): string { return new Date().toLocaleDateString("zh-CN", { year: 'numeric', month: 'long', day: 'numeric' }); }
 function cleanAndParseJSON(text: string): any {
-  let cleaned = text.trim();
-  if (cleaned.startsWith("```")) {
-    const firstLineEnd = cleaned.indexOf("\n");
-    if (firstLineEnd !== -1) cleaned = cleaned.substring(firstLineEnd).trim();
-    if (cleaned.endsWith("```")) cleaned = cleaned.substring(0, cleaned.length - 3).trim();
-  }
+  let cleaned = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
   return JSON.parse(cleaned);
 }
 
-function getMockNews() {
-  return [{ title: "财经市场动态", source: "内置模型", summary: "市场平稳。", sentiment: "neutral", affectedAssets: ["美股"], category: "macro", relevanceScore: 5, url: "#" }];
-}
-
-function getMockTrends() {
-  return [{ assetClass: "stocks", nameZh: "全球股市", shortTermTrend: "neutral", shortTermOutlook: "震荡", longTermTrend: "neutral", longTermOutlook: "平稳", technicalIndicators: [], fundamentalDrivers: [], riskLevel: "low", riskWarnings: [], investmentAdvice: [], lastUpdated: new Date().toISOString() }];
-}
-
-function getMockHotPushes() {
-  return [{ id: "market-data", topic: "市场机会", description: "市场平稳。", catalysts: [], recommendedStrategy: "观望", riskRating: "low", potentialTickers: [{ ticker: "N/A", name: "无", impact: "positive" }], riskWarnings: "无" }];
-}
-
-function getMockPortfolioAnalysis(items: any[]) {
-  return { overallRiskScore: 50, diversificationRating: "good", analysisSummary: "平稳。", assetClassDistribution: [], vulnerabilities: [], rebalancingRecommendations: [] };
-}
-
-function getLocalAdvisorResponse(query: string) {
-  return { reply: "睿泽智能投顾：内测演示。", references: [] };
-}
-
 // Routes
-app.get("/api/health", (req, res) => res.json({ status: "ok" }));
-app.get("/api/news", (req, res) => res.json({ news: getMockNews(), cached: false, isDemoMode: true }));
-app.get("/api/asset-trends", (req, res) => res.json({ trends: getMockTrends(), cached: false, isDemoMode: true }));
-app.get("/api/hot-pushes", (req, res) => res.json({ hotPushes: getMockHotPushes(), cached: false, isDemoMode: true }));
-app.post("/api/advisor/chat", (req, res) => res.json(getLocalAdvisorResponse("")));
-app.post("/api/portfolio/analyze", (req, res) => res.json(getMockPortfolioAnalysis([])));
-app.get("/api/watchlist-prices", (req, res) => res.json({ watchlist: [], isRealData: false }));
-app.post("/api/portfolio/prices", (req, res) => res.json({ prices: [] }));
+app.get("/api/health", (req, res) => res.json({ status: "ok", demo: !process.env.GEMINI_API_KEY }));
+
+app.get("/api/news", async (req, res) => {
+  try {
+    const ai = getGemini();
+    const prompt = `今天（${getTodayDateString()}）最重要的5个财经新闻事件，返回JSON。`;
+    const response = await generateModelContent(ai, {
+        contents: prompt,
+        config: { responseMimeType: "application/json" }
+    });
+    res.json({ news: cleanAndParseJSON(response.text), cached: false, isDemoMode: false });
+  } catch (e) {
+    res.json({ news: [], error: "Failed to fetch news" });
+  }
+});
+
 app.get("/api/debug", (req, res) => {
   res.json({
     keyPresent: !!process.env.GEMINI_API_KEY,
-    keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 4) + "..." : "null"
+    keyPrefix: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.substring(0, 4) + "..." : "null",
+    model: process.env.GEMINI_MODEL || "default"
   });
 });
 
